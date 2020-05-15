@@ -4,7 +4,9 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Wallcat.Services;
 using Wallcat.Util;
@@ -34,24 +36,21 @@ namespace Wallcat
             Application.ThreadException += Application_ThreadException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
 
+            ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, error) => true;
             Application.Run(new MyCustomApplicationContext());
         }
 
         private static void Application_ThreadException(object sender, ThreadExceptionEventArgs e)
         {
 #if DEBUG
-            MessageBox.Show(e.Exception.ToString(), "Thread Exception!");
-#else
-            new GoogleAnalytics().SubmitException(e.Exception.Message).Wait();
+            MessageBox.Show(e.Exception.ToString(), @"Thread Exception!");
 #endif
         }
 
         private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
 #if DEBUG
-            MessageBox.Show((e.ExceptionObject as Exception).ToString(), "Unhandled Exception!");
-#else
-            new GoogleAnalytics().SubmitException((e.ExceptionObject as Exception).Message).Wait();
+            MessageBox.Show(e.ToString(), @"Unhandled Exception!");
 #endif
         }
     }
@@ -61,7 +60,6 @@ namespace Wallcat
         private NotifyIcon _trayIcon;
         private readonly ContextMenu _contextMenu;
         private readonly WallcatService _wallcatService;
-        private readonly GoogleAnalytics _googleAnalytics;
         private System.Threading.Timer _timer;
 
         public MyCustomApplicationContext()
@@ -70,7 +68,6 @@ namespace Wallcat
             SystemEvents.PowerModeChanged += OnPowerChange;
 
             _wallcatService = new WallcatService();
-            _googleAnalytics = new GoogleAnalytics();
             _contextMenu = new ContextMenu();
             _trayIcon = new NotifyIcon
             {
@@ -82,15 +79,39 @@ namespace Wallcat
             using (var iconAnimation = new IconAnimation(ref _trayIcon))
             {
                 // Add Menu items
-                var channels = _wallcatService.GetChannels().Result;
-                _contextMenu.MenuItems.Add(new MenuItem("Featured Channels") { Enabled = false });
-                _contextMenu.MenuItems.AddRange(channels.Select(channel => new MenuItem(channel.title, SelectChannel) { Tag = channel, Checked = IsCurrentChannel(channel) }).ToArray());
+                _contextMenu.MenuItems.Add(new MenuItem("Featured Channels") {Enabled = false});
+                var channels = InitChannelsOnce();
+                if (channels != null)
+                {
+                    _contextMenu.MenuItems.AddRange(channels.Select(channel =>
+                        new MenuItem(channel.title, SelectChannel)
+                            {Tag = channel, Checked = IsCurrentChannel(channel)}).ToArray());
+                }
+                else
+                {
+                    const string menuKey = "Failed to fetch Channels, retrying...";
+                    _contextMenu.MenuItems.Add(new MenuItem(menuKey) {Enabled = false, Name = menuKey});
+                    Task.Run(() =>
+                    {
+                        channels = InitChannels();
+                        var achor = _contextMenu.MenuItems.Find(menuKey, false);
+                        foreach (var channel in channels)
+                        {
+                            _contextMenu.MenuItems.Add(achor.First().Index,
+                                new MenuItem(channel.title) {Tag = channel, Checked = IsCurrentChannel(channel)});
+                        }
+
+                        _contextMenu.MenuItems.Remove(achor.First());
+                    });
+                }
+
                 _contextMenu.MenuItems.AddRange(new[]
                 {
-                    new MenuItem("-") { Enabled = false },
+                    new MenuItem("-") {Enabled = false},
                     new MenuItem("Create Channel...", (sender, args) => ChannelCreateWebpage()),
-                    new MenuItem("Start at login", (sender, args) => CreateStartupShortcut()) { Checked = IsEnabledAtStartup() },
-                    new MenuItem("-") { Enabled = false },
+                    new MenuItem("Start at login", (sender, args) => CreateStartupShortcut())
+                        {Checked = IsEnabledAtStartup()},
+                    new MenuItem("-") {Enabled = false},
                     new MenuItem("Quit Wallcat", (sender, args) => Application.Exit())
                 });
 
@@ -109,18 +130,47 @@ namespace Wallcat
                         Properties.Settings.Default.CurrentChannel = channel;
                         Properties.Settings.Default.Save();
 
-                        _trayIcon.ShowBalloonTip(10 * 1000, "Welcome to Wallcat", $"Enjoy the {channel.title} channel!", ToolTipIcon.Info);
+                        _trayIcon.ShowBalloonTip(10 * 1000, "Welcome to Wallcat", $"Enjoy the {channel.title} channel!",
+                            ToolTipIcon.Info);
                     }
 
                     Properties.Settings.Default.UniqueIdentifier = Guid.NewGuid();
-                    _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.system, GoogleAnalyticsAction.appInstalled).Wait();
+
+                    UpdateWallpaper();
+                    MidnightUpdate();
+                }
+            }
+        }
+
+        private Channel[] InitChannelsOnce()
+        {
+            try
+            {
+                var channels = WallcatService.GetDefaultChannels();
+                return channels;
+            }
+            catch (Exception e)
+            {
+#if DEBUG
+                MessageBox.Show(e.ToString(), @"Failed to init Channels!");
+#endif
+            }
+
+            return null;
+        }
+
+        private Channel[] InitChannels()
+        {
+            do
+            {
+                var channels = InitChannelsOnce();
+                if (channels != null)
+                {
+                    return channels;
                 }
 
-                _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.system, GoogleAnalyticsAction.appLaunched).Wait();
-
-                UpdateWallpaper();
-                MidnightUpdate();
-            }
+                Thread.Sleep(1000);
+            } while (true);
         }
 
         private void UpdateWallpaper()
@@ -129,7 +179,7 @@ namespace Wallcat
             {
                 var channel = Properties.Settings.Default.CurrentChannel;
                 if (channel != null)
-                    SelectChannel(new MenuItem { Tag = channel }, null);
+                    SelectChannel(new MenuItem {Tag = channel}, null);
             }
         }
 
@@ -137,17 +187,7 @@ namespace Wallcat
         {
             using (var iconAnimation = new IconAnimation(ref _trayIcon))
             {
-                if (Properties.Settings.Default.CurrentChannel != null && e != null)
-                {
-                    await _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.channel, GoogleAnalyticsAction.channelUnsubscribed,
-                        Properties.Settings.Default.CurrentChannel.title,
-                        new[] {
-                            new DimensionTuple(GoogleAnalyticsDimension.channelId, Properties.Settings.Default.CurrentChannel.id),
-                            new DimensionTuple(GoogleAnalyticsDimension.channelTitle, Properties.Settings.Default.CurrentChannel.title)
-                        });
-                }
-
-                var channel = (Channel)((MenuItem)sender).Tag;
+                var channel = (Channel) ((MenuItem) sender).Tag;
                 var wallpaper = await _wallcatService.GetWallpaper(channel.id);
                 if (wallpaper.id == Properties.Settings.Default.CurrentWallpaper?.id) return;
                 var filePath = await DownloadFile.Get(wallpaper.url.o);
@@ -169,25 +209,6 @@ namespace Wallcat
 
                 // Update Menu
                 UpdateMenuCurrentImage(wallpaper);
-
-                await _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.wallpaper, GoogleAnalyticsAction.wallpaperSet, wallpaper.id, new[]
-                {
-                    new DimensionTuple(GoogleAnalyticsDimension.wallpaperId, wallpaper.id),
-                    new DimensionTuple(GoogleAnalyticsDimension.wallpaperTitle, wallpaper.title),
-                    new DimensionTuple(GoogleAnalyticsDimension.channelId, channel.id),
-                    new DimensionTuple(GoogleAnalyticsDimension.channelTitle, channel.title),
-                    new DimensionTuple(GoogleAnalyticsDimension.partnerId, wallpaper.partner.id),
-                    new DimensionTuple(GoogleAnalyticsDimension.partnerName, wallpaper.partner.name)
-                });
-
-                if (e != null)
-                {
-                    await _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.channel, GoogleAnalyticsAction.channelSubscribed,
-                        channel.title, new[] {
-                        new DimensionTuple(GoogleAnalyticsDimension.channelId, channel.id),
-                        new DimensionTuple(GoogleAnalyticsDimension.channelTitle, channel.title)
-                        });
-                }
             }
         }
 
@@ -218,11 +239,12 @@ namespace Wallcat
             }
 
             // Add Current Image
-            _contextMenu.MenuItems.Add(0, new MenuItem("Current Image") { Enabled = false, Tag = tag });
-            _contextMenu.MenuItems.Add(1, new MenuItem($"{wallpaper.title} by {wallpaper.partner.first} {wallpaper.partner.last}",
-                (sender, args) => WallpaperSourceWebpage(wallpaper))
-            { Tag = tag });
-            _contextMenu.MenuItems.Add(2, new MenuItem("-") { Enabled = false, Tag = tag });
+            _contextMenu.MenuItems.Add(0, new MenuItem("Current Image") {Enabled = false, Tag = tag});
+            _contextMenu.MenuItems.Add(1,
+                new MenuItem($"{wallpaper.title} by {wallpaper.partner.first} {wallpaper.partner.last}",
+                        (sender, args) => WallpaperSourceWebpage(wallpaper))
+                    {Tag = tag});
+            _contextMenu.MenuItems.Add(2, new MenuItem("-") {Enabled = false, Tag = tag});
         }
 
         private void MidnightUpdate()
@@ -239,28 +261,17 @@ namespace Wallcat
         {
             // Hide tray icon, otherwise it will remain shown until user mouses over it
             _trayIcon.Visible = false;
-
-            _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.system, GoogleAnalyticsAction.appQuit).Wait();
         }
 
         private void ChannelCreateWebpage()
         {
             Process.Start("https://beta.wall.cat/partners");
-
-            _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.channel, GoogleAnalyticsAction.channelCreateTapped).Wait();
         }
 
         private void WallpaperSourceWebpage(Wallpaper wallpaper)
         {
             const string campaign = "?utm_source=windows&utm_medium=menuItem&utm_campaign=wallcat";
             Process.Start(wallpaper.sourceUrl + campaign);
-
-            _googleAnalytics.SubmitEvent(GoogleAnalyticsCategory.wallpaper, GoogleAnalyticsAction.wallpaperSourceTapped, wallpaper.id, new[] {
-               new DimensionTuple(GoogleAnalyticsDimension.wallpaperId, wallpaper.id),
-               new DimensionTuple(GoogleAnalyticsDimension.wallpaperTitle, wallpaper.title),
-               new DimensionTuple(GoogleAnalyticsDimension.partnerId, wallpaper.partner.id),
-               new DimensionTuple(GoogleAnalyticsDimension.partnerName, wallpaper.partner.name)
-            }).Wait();
         }
 
         private void OnPowerChange(object sender, PowerModeChangedEventArgs e)
@@ -288,7 +299,7 @@ namespace Wallcat
             }
             else
             {
-                var shortcut = (IWshShortcut)new WshShell().CreateShortcut(pathToShortcut);
+                var shortcut = (IWshShortcut) new WshShell().CreateShortcut(pathToShortcut);
 
                 shortcut.Description = "Enjoy a new, beautiful wallpaper, every day.";
                 shortcut.TargetPath = pathToExe;
@@ -297,7 +308,7 @@ namespace Wallcat
 
             foreach (MenuItem menuItem in _contextMenu.MenuItems)
             {
-                if (menuItem.Text == "Start at login")
+                if (menuItem.Text == @"Start at login")
                 {
                     menuItem.Checked = IsEnabledAtStartup();
                     break;

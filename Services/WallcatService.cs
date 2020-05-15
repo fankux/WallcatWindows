@@ -7,9 +7,21 @@ namespace Wallcat.Services
 {
     public class WallcatService : IWallcatService
     {
-        private const string ApiHost = @"https://beta.wall.cat/api/v1";
+        private const string ApiHost = @"http://beta.wall.cat/api/v1";
 
         private static readonly HttpClient Client = new HttpClient();
+
+        public static Channel[] GetDefaultChannels()
+        {
+            const string jsonstr = "{\"success\":true,\"payload\":[{\"id\":\"RX1BtSlCrq\",\"title\":\"Structure\"," +
+                                   "\"description\":\"\",\"url\":\"\",\"isDefault\":true},{\"id\":\"ea4KhWHUGE\"," +
+                                   "\"title\":\"Fresh Air\",\"description\":\"\",\"url\":\"\",\"isDefault\":false}," +
+                                   "{\"id\":\"ygmTdEW7aF\",\"title\":\"Gradients\",\"description\":\"\",\"url\":\"\"," +
+                                   "\"isDefault\":false},{\"id\":\"tdA5aG8zpa\",\"title\":\"Northern Perspective\"," +
+                                   "\"description\":\"\",\"url\":\"\",\"isDefault\":false}],\"apiVersion\":1," +
+                                   "\"location\":\"http://beta.wall.cat/api/v1/channels\"}";
+            return new JavaScriptSerializer().Deserialize<ChannelResponse>(jsonstr).payload;
+        }
 
         public async Task<Channel[]> GetChannels()
         {
