@@ -1,11 +1,59 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
-namespace Wallcat.Services
+namespace Wallcat.service
 {
-    public class WallcatService : IWallcatService
+    public class Channel
+    {
+        public string id { get; set; }
+        public string title { get; set; }
+        public bool isDefault { get; set; }
+    }
+
+    public class Wallpaper
+    {
+        public string id { get; set; }
+        public string title { get; set; }
+
+        public WallpaperPartner partner { get; set; }
+        public WallpaperChannel channel { get; set; }
+        public WallpaperUrls url { get; set; }
+
+        public string sourceUrl { get; set; }
+    }
+
+    public class WallpaperPartner
+    {
+        public string id { get; set; }
+        public string first { get; set; }
+        public string last { get; set; }
+
+        public string name
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(last))
+                    return first;
+
+                return $"{first} {last}";
+            }
+        }
+    }
+
+    public class WallpaperChannel
+    {
+        public string id { get; set; }
+    }
+
+    public class WallpaperUrls
+    {
+        public string o { get; set; }
+    }
+    
+    public class Server
     {
         private const string ApiHost = @"http://beta.wall.cat/api/v1";
 
@@ -35,6 +83,12 @@ namespace Wallcat.Services
             var response = await Client.GetAsync($"{ApiHost}/channels/{channelId}/image/{DateTime.Now:yyyy-MM-dd}T00:00:00.000Z");
             response.EnsureSuccessStatusCode();
             return new JavaScriptSerializer().Deserialize<WallpaperResponse>(await response.Content.ReadAsStringAsync()).payload.image;
+        }
+        
+        public void WallpaperSourceWebpage(Wallpaper wallpaper)
+        {
+            const string campaign = "?utm_source=windows&utm_medium=menuItem&utm_campaign=wallcat";
+            Process.Start(wallpaper.sourceUrl + campaign);
         }
     }
 
